@@ -1,0 +1,13 @@
+flask
+flask-cors
+sentence-transformers
+faiss-cpu
+transformers
+torch==2.5.1
+torchvision==0.20.1
+langdetect
+argostranslate
+numpy
+yt-dlp
+openai-whisper
+gunicorn

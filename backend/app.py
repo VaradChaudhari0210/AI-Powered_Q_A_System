@@ -9,6 +9,10 @@ import os
 from langdetect import detect
 import argostranslate.package
 import argostranslate.translate
+import yt_dlp
+import whisper
+import subprocess
+from pathlib import Path
 
 app = Flask(__name__)
 CORS(app)
@@ -49,6 +53,73 @@ def list_videos():
                 "description": "Uploaded video"
             })
     return jsonify(videos)
+
+@app.route("/process-video", methods=["POST"])
+def process_video():
+    data = request.get_json()
+    video_url = data.get("url")
+    
+    if not video_url:
+        return jsonify({"error": "No URL provided"}), 400
+    
+    try:
+        # Create directories
+        videos_dir = Path("../frontend/public")
+        videos_dir.mkdir(exist_ok=True)
+        
+        # Download video
+        ydl_opts = {
+            'format': 'best[ext=mp4]',
+            'outtmpl': str(videos_dir / '%(title)s.%(ext)s'),
+            'quiet': False,
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=True)
+            video_title = info['title']
+            video_filename = ydl.prepare_filename(info)
+            video_path = Path(video_filename)
+        
+        # Extract audio
+        audio_path = video_path.with_suffix('.wav')
+        subprocess.run([
+            'ffmpeg', '-i', str(video_path),
+            '-vn', '-acodec', 'pcm_s16le',
+            '-ar', '16000', '-ac', '1',
+            str(audio_path), '-y'
+        ], check=True)
+        
+        # Transcribe with Whisper
+        whisper_model = whisper.load_model("base")
+        result = whisper_model.transcribe(str(audio_path), word_timestamps=True)
+        
+        # Create aligned segments
+        segments = []
+        for segment in result['segments']:
+            segments.append({
+                "speaker": "Speaker",
+                "start": segment['start'],
+                "end": segment['end'],
+                "text": segment['text'].strip()
+            })
+        
+        # Save aligned segments
+        segments_filename = f"aligned_segments_{video_title}.json"
+        with open(segments_filename, 'w', encoding='utf-8') as f:
+            json.dump(segments, f, ensure_ascii=False, indent=2)
+        
+        # Clean up audio file
+        audio_path.unlink(missing_ok=True)
+        
+        return jsonify({
+            "success": True,
+            "video_title": video_title,
+            "video_file": f"/{video_path.name}",
+            "segments_count": len(segments)
+        })
+    
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/ask", methods=["POST"])
 def ask():
@@ -110,4 +181,4 @@ def ask():
     })
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)

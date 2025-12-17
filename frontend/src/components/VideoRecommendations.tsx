@@ -1,15 +1,19 @@
-import { useState } from "react";
-import { useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Play } from "lucide-react";
+import AddVideoDialog from "./AddVideoDialog";
 
 export default function VideoRecommendations({ onVideoSelect }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [uploadedVideos, setUploadedVideos] = useState([]);
 
-  useEffect(() => {
+  const fetchVideos = () => {
     fetch("http://localhost:5000/videos")
       .then((res) => res.json())
       .then((data) => setUploadedVideos(data));
+  };
+
+  useEffect(() => {
+    fetchVideos();
   }, []);
 
   const filteredVideos = uploadedVideos.filter((video) =>
@@ -23,6 +27,7 @@ export default function VideoRecommendations({ onVideoSelect }) {
       </div>
 
       <div className="flex-1 overflow-y-auto p-4">
+        <AddVideoDialog onVideoAdded={fetchVideos} />
         <div className="space-y-3">
           {filteredVideos.map((video) => (
             <div
