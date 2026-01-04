@@ -37,27 +37,37 @@ export default function ChatInterface({ messages, onQuerySubmit, onPlaySegment }
                   </div>
                 ) : (
                   <div className="flex justify-start">
-                    <div className="bg-gray-700 px-4 py-2 rounded-lg max-w-md">
-                      <p className="mb-2">{message.content}</p>
+                    <div className="bg-gray-700 px-4 py-3 rounded-lg max-w-lg">
+                      {/* Main Answer */}
+                      <div className="mb-3">
+                        <div className="text-xs text-green-400 font-semibold mb-1">💡 Answer:</div>
+                        <p className="text-white">{message.content}</p>
+                      </div>
+                      
+                      {/* Language Info */}
                       {message.meta && (
-                        <div className="mb-2 text-xs text-gray-400">
-                          <div>
-                            <b>Question Language:</b> {message.meta.questionLanguage}
+                        <div className="mb-3 p-2 bg-gray-800 rounded text-xs text-gray-400">
+                          <div className="flex gap-4">
+                            <span><b>Question:</b> {message.meta.questionLanguage?.toUpperCase()}</span>
+                            <span><b>Video:</b> {message.meta.videoLanguage?.toUpperCase()}</span>
                           </div>
-                          <div>
-                            <b>Video Language:</b> {message.meta.videoLanguage}
-                          </div>
-                          <div>
-                            <b>Original Answer:</b> {message.meta.answerOriginal}
-                          </div>
+                          {message.meta.answerOriginal && message.meta.questionLanguage !== message.meta.videoLanguage && (
+                            <div className="mt-2 pt-2 border-t border-gray-700">
+                              <b>Original ({message.meta.videoLanguage?.toUpperCase()}):</b>
+                              <p className="mt-1 text-gray-300">{message.meta.answerOriginal}</p>
+                            </div>
+                          )}
                         </div>
                       )}
-                      {message.timestamps && (
-                        <div className="space-y-1 mt-2">
+                      
+                      {/* Source Segments */}
+                      {message.timestamps && message.timestamps.length > 0 && (
+                        <div className="space-y-2">
+                          <div className="text-xs text-blue-400 font-semibold">📍 Source Segments:</div>
                           {message.timestamps.map((timestamp, idx) => (
                             <div
                               key={idx}
-                              className="flex flex-col gap-1 text-sm border border-gray-600 rounded-lg p-2"
+                              className="flex flex-col gap-1 text-sm border border-gray-600 rounded-lg p-2 bg-gray-800"
                             >
                               <div className="flex justify-between items-center">
                                 <span className="bg-blue-600 px-2 py-1 rounded text-xs font-mono">
@@ -65,12 +75,12 @@ export default function ChatInterface({ messages, onQuerySubmit, onPlaySegment }
                                 </span>
                                 <button
                                   onClick={() => onPlaySegment(timestamp.startTime)}
-                                  className="text-xs bg-green-700 hover:bg-green-800 px-2 py-0.5 rounded"
+                                  className="text-xs bg-green-700 hover:bg-green-800 px-2 py-1 rounded"
                                 >
-                                  ▶️ Play Segment
+                                  ▶️ Play
                                 </button>
                               </div>
-                              <div className="text-gray-300">
+                              <div className="text-gray-300 text-xs mt-1">
                                 <b>{timestamp.speaker}:</b> {timestamp.description}
                               </div>
                             </div>

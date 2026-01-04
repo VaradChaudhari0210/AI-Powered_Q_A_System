@@ -11,3 +11,4 @@ numpy
 yt-dlp
 openai-whisper
 gunicorn
+duckduckgo-search

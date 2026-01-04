@@ -9,10 +9,18 @@ import os
 from langdetect import detect
 import argostranslate.package
 import argostranslate.translate
-import yt_dlp
-import whisper
-import subprocess
-from pathlib import Path
+
+# Try to import web search (optional)
+try:
+    from duckduckgo_search import DDGS
+    WEB_SEARCH_AVAILABLE = True
+except ImportError:
+    try:
+        from ddgs import DDGS
+        WEB_SEARCH_AVAILABLE = True
+    except ImportError:
+        WEB_SEARCH_AVAILABLE = False
+        print("Web search not available. Install with: pip install duckduckgo-search")
 
 app = Flask(__name__)
 CORS(app)
@@ -38,6 +46,21 @@ def translate(text, from_lang_code, to_lang_code):
         return translation.translate(text)
     return text  # fallback if translation not available
 
+def search_web(query, max_results=3):
+    """Search the web for additional context using DuckDuckGo"""
+    if not WEB_SEARCH_AVAILABLE:
+        return ""
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+            web_context = []
+            for r in results:
+                web_context.append(f"{r.get('title', '')}: {r.get('body', '')}")
+            return "\n".join(web_context)
+    except Exception as e:
+        print(f"Web search error: {e}")
+        return ""
+
 @app.route("/videos", methods=["GET"])
 def list_videos():
     public_dir = os.path.join(os.path.dirname(__file__), "../frontend/public")
@@ -53,73 +76,6 @@ def list_videos():
                 "description": "Uploaded video"
             })
     return jsonify(videos)
-
-@app.route("/process-video", methods=["POST"])
-def process_video():
-    data = request.get_json()
-    video_url = data.get("url")
-    
-    if not video_url:
-        return jsonify({"error": "No URL provided"}), 400
-    
-    try:
-        # Create directories
-        videos_dir = Path("../frontend/public")
-        videos_dir.mkdir(exist_ok=True)
-        
-        # Download video
-        ydl_opts = {
-            'format': 'best[ext=mp4]',
-            'outtmpl': str(videos_dir / '%(title)s.%(ext)s'),
-            'quiet': False,
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=True)
-            video_title = info['title']
-            video_filename = ydl.prepare_filename(info)
-            video_path = Path(video_filename)
-        
-        # Extract audio
-        audio_path = video_path.with_suffix('.wav')
-        subprocess.run([
-            'ffmpeg', '-i', str(video_path),
-            '-vn', '-acodec', 'pcm_s16le',
-            '-ar', '16000', '-ac', '1',
-            str(audio_path), '-y'
-        ], check=True)
-        
-        # Transcribe with Whisper
-        whisper_model = whisper.load_model("base")
-        result = whisper_model.transcribe(str(audio_path), word_timestamps=True)
-        
-        # Create aligned segments
-        segments = []
-        for segment in result['segments']:
-            segments.append({
-                "speaker": "Speaker",
-                "start": segment['start'],
-                "end": segment['end'],
-                "text": segment['text'].strip()
-            })
-        
-        # Save aligned segments
-        segments_filename = f"aligned_segments_{video_title}.json"
-        with open(segments_filename, 'w', encoding='utf-8') as f:
-            json.dump(segments, f, ensure_ascii=False, indent=2)
-        
-        # Clean up audio file
-        audio_path.unlink(missing_ok=True)
-        
-        return jsonify({
-            "success": True,
-            "video_title": video_title,
-            "video_file": f"/{video_path.name}",
-            "segments_count": len(segments)
-        })
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 @app.route("/ask", methods=["POST"])
 def ask():
@@ -147,20 +103,85 @@ def ask():
     sample_text = " ".join(texts[:3])
     video_lang = get_lang_code(sample_text)
 
-    # Translate user question → video language
-    question_translated = translate(question, user_lang, video_lang)
-
-    # Embed and retrieve relevant segments
-    query_vec = model_embed.encode([question_translated])
+    # Embed and retrieve relevant segments (use original question - embeddings work across languages)
+    query_vec = model_embed.encode([question])
     distances, indices = index.search(np.array(query_vec), 3)
 
-    context = "\n".join([segments[i]["text"] for i in indices[0]])
-    prompt = f"Context: {context}\n\nQuestion: {question_translated}\nAnswer:"
-    response = qa_model(prompt, max_new_tokens=100)[0]["generated_text"]
-    answer_in_video_lang = response.split("Answer:")[-1].strip()
+    # Get the most relevant segments
+    relevant_segments = [segments[i]["text"] for i in indices[0]]
+    context = "\n".join(relevant_segments)
+    
+    # Try to translate context to English for LLM (Flan-T5 works best with English)
+    context_for_llm = context
+    translation_available = False
+    
+    if video_lang == "hi":
+        translated_context = translate(context, "hi", "en")
+        # Check if translation actually worked (not same as input)
+        if translated_context != context and len(translated_context) > 20:
+            context_for_llm = translated_context
+            translation_available = True
+    
+    # Limit context length to avoid token overflow (max ~300 chars)
+    context_for_llm = context_for_llm[:600]
+    
+    # Translate question to English for LLM if needed
+    question_for_llm = question
+    if user_lang == "hi":
+        translated_q = translate(question, "hi", "en")
+        if translated_q != question:
+            question_for_llm = translated_q
+    
+    # Search web for additional context (limit results)
+    web_context = search_web(question_for_llm, max_results=2)
+    # Limit web context length
+    web_context = web_context[:400] if web_context else ""
+    
+    # Generate answer with limited context to avoid token overflow
+    prompt = f"""Answer the question using the video transcript and web info.
 
-    # Translate back to user's language
-    answer_in_user_lang = translate(answer_in_video_lang, video_lang, user_lang)
+Video: {context_for_llm}
+
+Web: {web_context if web_context else 'None'}
+
+Question: {question_for_llm}
+
+Answer in 2-3 sentences:"""
+    
+    response = qa_model(prompt, max_new_tokens=150)[0]["generated_text"]
+    answer_in_english = response.strip()
+    
+    # Clean up the answer
+    if "Answer:" in answer_in_english:
+        answer_in_english = answer_in_english.split("Answer:")[-1].strip()
+    if "sentences:" in answer_in_english:
+        answer_in_english = answer_in_english.split("sentences:")[-1].strip()
+    
+    # Fallback: Create a structured answer if LLM answer is poor
+    if not answer_in_english or len(answer_in_english) < 20:
+        # Use the most relevant segment with web context
+        best_segment = relevant_segments[0] if relevant_segments else context[:300]
+        
+        if web_context:
+            # Combine video and web info in fallback
+            fallback_prompt = f"Summarize this: {best_segment}. Additional info: {web_context[:200]}"
+            fallback_response = qa_model(fallback_prompt, max_new_tokens=150)[0]["generated_text"]
+            answer_in_english = fallback_response.strip() if fallback_response.strip() else f"From the video: {best_segment[:200]}"
+        else:
+            answer_in_english = f"From the video: {best_segment[:200]}"
+    # Translate answer to user's language
+    answer_in_user_lang = answer_in_english
+    answer_in_video_lang = answer_in_english
+    
+    if user_lang == "hi" and answer_in_english:
+        translated_ans = translate(answer_in_english, "en", "hi")
+        if translated_ans != answer_in_english:
+            answer_in_user_lang = translated_ans
+    
+    if video_lang == "hi" and answer_in_english:
+        translated_ans = translate(answer_in_english, "en", "hi")
+        if translated_ans != answer_in_english:
+            answer_in_video_lang = translated_ans
 
     # Prepare results
     segment_results = [
@@ -181,4 +202,4 @@ def ask():
     })
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
+    app.run(debug=True)
